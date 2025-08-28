@@ -9,7 +9,6 @@ import google.generativeai as genai
 import numpy as np
 from dotenv import load_dotenv
 
-
 load_dotenv()
 
 from app.models import (
@@ -18,7 +17,10 @@ from app.models import (
     run_image_model,
     enqueue_video_job,
     get_job_status,
+    sentence_tokenizer,
+    sentence_model
 )
+import torch
 
 app = FastAPI(title="BiasLab API")
 
@@ -27,7 +29,7 @@ app = FastAPI(title="BiasLab API")
 # ------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # adjust in production
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -73,13 +75,9 @@ async def analyze_sentence(text: str = Form(...)) -> List[Dict]:
     return run_sentence_model(text)
 
 # ------------------------------
-# Article analysis
+# Article analysis helper (fast batch sentences)
 # ------------------------------
-@app.post("/analyze/article")
-async def analyze_article(text: str = Form(...)) -> Dict:
-    # URL handling
-    text_content = extract_text_from_url(text) if text.startswith("http") else text
-
+def analyze_article_logic(text_content: str) -> Dict:
     # Article-level score
     try:
         article_score, themes = run_article_model(text_content)
@@ -88,39 +86,45 @@ async def analyze_article(text: str = Form(...)) -> Dict:
         print("run_article_model error:", e)
         article_score, themes = 0.0, []
 
-    # Sentence-level
-    try:
-        sentence_results = run_sentence_model(text_content) or []
-    except Exception as e:
-        print("run_sentence_model error:", e)
-        sentence_results = []
-
+    # Sentence-level batch processing
+    from nltk.tokenize import sent_tokenize
+    sentences = sent_tokenize(text_content)
     highlights: List[Dict[str, Any]] = []
-    for r in sentence_results:
-        sent = r.get("sentence") if isinstance(r, dict) else str(r)
+
+    if sentences:
         try:
-            score_val = float(r.get("score", 0.0))
-        except Exception:
-            score_val = 0.0
-        explanation = r.get("explanation", "") if isinstance(r, dict) else ""
+            # Batch tokenize all sentences
+            inputs = sentence_tokenizer(
+                sentences,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=128
+            )
+            with torch.no_grad():
+                logits = sentence_model(**inputs).logits
+            probs = torch.softmax(logits, dim=-1)[:, 1].numpy()  # biased class probability
 
-        if score_val > 0.6:
-            bias_level = "high"
-        elif score_val > 0.3:
-            bias_level = "medium"
-        elif score_val > 0:
-            bias_level = "low"
-        else:
-            bias_level = "neutral"
+            for sent, score_val in zip(sentences, probs):
+                if score_val > 0.6:
+                    bias_level = "high"
+                elif score_val > 0.3:
+                    bias_level = "medium"
+                elif score_val > 0:
+                    bias_level = "low"
+                else:
+                    bias_level = "neutral"
 
-        highlights.append({
-            "sentence": sent,
-            "score": round(score_val, 4),
-            "bias": bias_level,
-            "explanation": explanation
-        })
+                highlights.append({
+                    "sentence": sent,
+                    "score": float(score_val),
+                    "bias": bias_level,
+                    "explanation": ""  # SHAP removed for speed
+                })
+        except Exception as e:
+            print("Batch sentence processing error:", e)
 
-    # Confidence
+    # Compute overall confidence
     if highlights:
         bias_prob = float(np.mean([h["score"] for h in highlights]))
     else:
@@ -129,14 +133,25 @@ async def analyze_article(text: str = Form(...)) -> Dict:
     bias_prob = float(max(0.0, min(1.0, bias_prob)))
     overall_bias = "biased" if bias_prob >= 0.5 else "neutral"
 
+    # Updated confidence score logic
+    confidence_score = bias_prob if overall_bias == "biased" else 1 - bias_prob
+
     return {
         "overall_bias": overall_bias,
-        "confidence_score": round(bias_prob, 4),
-        "confidence_pct": round(bias_prob * 100, 2),
+        "confidence_score": round(confidence_score, 4),
+        "confidence_pct": round(confidence_score * 100, 2),
         "highlights": highlights,
         "themes": themes,
         "original_text": text_content
     }
+
+# ------------------------------
+# Article analysis endpoint
+# ------------------------------
+@app.post("/analyze/article")
+async def analyze_article(text: str = Form(...)) -> Dict:
+    text_content = extract_text_from_url(text) if text.startswith("http") else text
+    return analyze_article_logic(text_content)
 
 # ------------------------------
 # Image analysis
@@ -185,7 +200,6 @@ Text:
         model = genai.GenerativeModel("gemini-1.5-flash")
         response = model.generate_content(prompt)
 
-        # ✅ safer parsing
         neutral = ""
         if response and hasattr(response, "candidates") and response.candidates:
             parts = response.candidates[0].content.parts
@@ -200,6 +214,23 @@ Text:
     except HTTPException:
         raise
     except Exception as e:
-        # ✅ log raw response if debugging
         print("Gemini error:", str(e))
         raise HTTPException(status_code=500, detail=f"Rephrase failed: {str(e)}")
+
+# ------------------------------
+# Scrape and send to article analyze
+# ------------------------------
+@app.post("/scrape-and-analyze")
+async def scrape_and_analyze(url: str = Form(...)) -> Dict:
+    """
+    Accepts a URL, scrapes text, and sends it to existing article analysis logic.
+    Uses fast batch sentence processing and updated confidence score.
+    """
+    if not url.startswith("http"):
+        raise HTTPException(status_code=422, detail="Invalid URL.")
+
+    text_content = extract_text_from_url(url)
+    if not text_content:
+        raise HTTPException(status_code=500, detail="Failed to extract text from URL.")
+
+    return analyze_article_logic(text_content)
