@@ -57,7 +57,3 @@ venv/
 *.njsproj
 *.sln
 *.sw?
-# ML Models (large files)
-*.h5
-*.safetensors
-*.pth
