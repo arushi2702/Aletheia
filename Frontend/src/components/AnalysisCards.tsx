@@ -1,16 +1,8 @@
-"use client"
-
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { FileText, Image, Video, ArrowRight, Upload, Link } from "lucide-react"
 import { useRef, useState } from "react"
-import {
-  analyzeArticle,
-  analyzeImage,
-  analyzeVideo,
-  getJob,
-  rephraseArticle,
-} from "@/lib/api"
+import { analyzeArticle, analyzeImage, analyzeVideo, getJob, rephraseArticle } from "@/lib/api"
 import ResultsSection from "./ResultsSection"
 
 interface Highlight {
@@ -47,20 +39,45 @@ const AnalysisCards: React.FC<AnalysisCardsProps> = ({ scrollToSection }) => {
   const [result, setResult] = useState<Result | null>(null)
   const [loading, setLoading] = useState(false)
 
+  // -------------------------
   // Handle Article Analysis
+  // -------------------------
   const handleArticleAnalysis = async () => {
     const input = prompt("Enter article URL or text:")
     if (!input) return
     setLoading(true)
+
     try {
-      const res = await analyzeArticle(input)
+      // Send input to backend
+      const fd = new FormData()
+      fd.append("text", input)
+
+      const res = await fetch(`${import.meta.env.VITE_API_URL ?? "http://localhost:8000"}/analyze/article`, {
+        method: "POST",
+        body: fd,
+      })
+
+      if (!res.ok) {
+        const errText = await res.text()
+        throw new Error(errText)
+      }
+
+      const data = await res.json()
+
+      // Use backend's original_text (scraped if URL, raw if text)
       setResult({
         type: "article",
-        verdict: `Overall bias: ${res.overall_bias}`,
-        confidence: res.confidence,
-        original_text: res.original_text,
-        highlights: res.highlights || [],
+        verdict: `Overall bias: ${data.overall_bias}`,
+        confidence: Math.round(data.confidence_pct),
+        original_text: data.original_text,
+        highlights: (data.highlights || []).map((h: any) => ({
+          text: h.sentence,
+          bias: h.bias || (h.score > 0.6 ? "high" : h.score > 0.3 ? "medium" : "low"),
+          score: h.score,
+          explanation: h.explanation,
+        })),
       })
+
       scrollToSection("results")
     } catch (err) {
       console.error(err)
@@ -70,7 +87,9 @@ const AnalysisCards: React.FC<AnalysisCardsProps> = ({ scrollToSection }) => {
     }
   }
 
+  // -------------------------
   // Handle Image/Video Upload
+  // -------------------------
   const handleFileUpload = (fileType: "image" | "video") => {
     if (!fileInputRef.current) return
     fileInputRef.current.click()
@@ -116,7 +135,9 @@ const AnalysisCards: React.FC<AnalysisCardsProps> = ({ scrollToSection }) => {
     }
   }
 
-  // Hook up to /rephrase endpoint
+  // -------------------------
+  // Handle Rephrase
+  // -------------------------
   const handleRephrase = async (text: string) => {
     try {
       const res = await rephraseArticle(text)
@@ -124,7 +145,7 @@ const AnalysisCards: React.FC<AnalysisCardsProps> = ({ scrollToSection }) => {
         setResult({
           ...result,
           neutral_text: res.neutral_text,
-          highlights: res.highlights || result.highlights,
+          highlights: result.highlights,
         })
       }
       return { neutral_text: res.neutral_text }
