@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+trafilatura
+httpx
+pydantic
+shap
+celery[redis]
+redis
