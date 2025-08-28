@@ -26,7 +26,7 @@ def check_file(path: str):
     return exists
 
 # ------------------------------
-# Sentence Model (BERT, PyTorch) with SHAP
+# Sentence Model (BERT, PyTorch) with SHAP + batching
 # ------------------------------
 SENTENCE_MODEL_DIR = r"C:/Users/Arushi/Desktop/Important/Axios/biaslab/backend/models/sentence_model"
 check_file(SENTENCE_MODEL_DIR)
@@ -40,14 +40,13 @@ sentence_model = BertForSequenceClassification.from_pretrained(
 sentence_model.eval()
 print("BERT model loaded successfully.")
 
-def run_sentence_model(text: str) -> List[Dict]:
+def run_sentence_model(text: str, batch_size: int = 8) -> List[Dict]:
     from nltk.tokenize import sent_tokenize
     sentences = sent_tokenize(text)
     results = []
 
-    # Wrapper for SHAP
+    # Function wrapper for SHAP
     def f(input_texts):
-        # Handle SHAP's numpy inputs
         if isinstance(input_texts, np.ndarray):
             input_texts = input_texts.tolist()
         if isinstance(input_texts, str):
@@ -57,45 +56,56 @@ def run_sentence_model(text: str) -> List[Dict]:
         else:
             raise ValueError(f"Unexpected input type: {type(input_texts)}")
 
-        inputs = sentence_tokenizer(
-            input_texts,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=128
-        )
-        with torch.no_grad():
-            logits = sentence_model(**inputs).logits
-        probs = torch.softmax(logits, dim=-1)[:, 1].numpy()
-        return probs
+        all_probs = []
+        for i in range(0, len(input_texts), batch_size):
+            batch = input_texts[i:i + batch_size]
+            inputs = sentence_tokenizer(
+                batch,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=128
+            )
+            with torch.no_grad():
+                logits = sentence_model(**inputs).logits
+            probs = torch.softmax(logits, dim=-1)[:, 1].numpy()
+            all_probs.extend(probs)
+        return np.array(all_probs)
 
+    # SHAP explainer
     explainer = shap.Explainer(f, shap.maskers.Text(sentence_tokenizer))
 
-    for sent in sentences:
-        score = float(f([sent])[0])
-        shap_values = explainer([sent])  # now safe with ndarray handling
+    # Batch processing for SHAP
+    for i in range(0, len(sentences), batch_size):
+        batch_sents = sentences[i:i + batch_size]
+        batch_scores = f(batch_sents)
+        batch_shap_values = explainer(batch_sents)
 
-        # Convert SHAP attributions to explanation text
-        try:
-            explanation = " ".join(
-                f"{word}:{round(val, 2)}"
-                for word, val in zip(sent.split(), shap_values.values[0])
-            )
-        except Exception:
-            explanation = "Bias contribution could not be mapped to words."
+        for sent, score, shap_val_obj in zip(batch_sents, batch_scores, batch_shap_values):
+            try:
+                shap_vals = shap_val_obj.values[0]
+                explanation_words = []
+                for word, val in zip(sent.split(), shap_vals):
+                    if val > 0.05:
+                        explanation_words.append(f"'{word}' increases bias")
+                    elif val < -0.05:
+                        explanation_words.append(f"'{word}' reduces bias")
+                explanation = "; ".join(explanation_words) if explanation_words else "No strong bias detected"
+            except Exception:
+                explanation = "Bias contribution could not be mapped to words."
 
-        if score > 0.3:
-            start = text.find(sent)
-            end = start + len(sent)
-            results.append({
-                "start": start,
-                "end": end,
-                "sentence": sent,
-                "score": score,
-                "explanation": explanation,
-            })
+            if score > 0.3:
+                start = text.find(sent)
+                end = start + len(sent)
+                results.append({
+                    "start": start,
+                    "end": end,
+                    "sentence": sent,
+                    "score": float(score),
+                    "explanation": explanation,
+                })
+
     return results
-
 
 # ------------------------------
 # Article Model (BiLSTM, TensorFlow)

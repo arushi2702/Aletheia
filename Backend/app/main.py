@@ -1,13 +1,16 @@
+# main.py
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Dict, List, Any
+from typing import Dict, List
 import os
 import requests
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 import numpy as np
 from dotenv import load_dotenv
+import torch
+from nltk.tokenize import sent_tokenize
 
 load_dotenv()
 
@@ -20,7 +23,7 @@ from app.models import (
     sentence_tokenizer,
     sentence_model
 )
-import torch
+from app.xai import get_top_bias_words
 
 app = FastAPI(title="BiasLab API")
 
@@ -75,25 +78,21 @@ async def analyze_sentence(text: str = Form(...)) -> List[Dict]:
     return run_sentence_model(text)
 
 # ------------------------------
-# Article analysis helper (fast batch sentences)
+# Article analysis logic
 # ------------------------------
 def analyze_article_logic(text_content: str) -> Dict:
-    # Article-level score
-    try:
-        article_score, themes = run_article_model(text_content)
-        article_score = float(article_score or 0.0)
-    except Exception as e:
-        print("run_article_model error:", e)
-        article_score, themes = 0.0, []
-
-    # Sentence-level batch processing
-    from nltk.tokenize import sent_tokenize
+    """
+    Analyze an article, compute sentence-level bias, and attach SHAP-like explanations.
+    """
     sentences = sent_tokenize(text_content)
-    highlights: List[Dict[str, Any]] = []
+    highlights: List[Dict] = []
 
     if sentences:
         try:
-            # Batch tokenize all sentences
+            highlights = get_top_bias_words(sentence_model, sentence_tokenizer, sentences)
+        except Exception as e:
+            print("SHAP analysis error:", e)
+            # fallback scoring if SHAP fails
             inputs = sentence_tokenizer(
                 sentences,
                 return_tensors="pt",
@@ -103,8 +102,7 @@ def analyze_article_logic(text_content: str) -> Dict:
             )
             with torch.no_grad():
                 logits = sentence_model(**inputs).logits
-            probs = torch.softmax(logits, dim=-1)[:, 1].numpy()  # biased class probability
-
+            probs = torch.softmax(logits, dim=-1)[:, 1].numpy()
             for sent, score_val in zip(sentences, probs):
                 if score_val > 0.6:
                     bias_level = "high"
@@ -114,26 +112,17 @@ def analyze_article_logic(text_content: str) -> Dict:
                     bias_level = "low"
                 else:
                     bias_level = "neutral"
-
                 highlights.append({
                     "sentence": sent,
                     "score": float(score_val),
                     "bias": bias_level,
-                    "explanation": ""  # SHAP removed for speed
+                    "explanation": "; ".join(sent.split()[:5])
                 })
-        except Exception as e:
-            print("Batch sentence processing error:", e)
 
     # Compute overall confidence
-    if highlights:
-        bias_prob = float(np.mean([h["score"] for h in highlights]))
-    else:
-        bias_prob = float(article_score)
-
-    bias_prob = float(max(0.0, min(1.0, bias_prob)))
+    bias_prob = float(np.mean([h["score"] for h in highlights])) if highlights else 0.0
+    bias_prob = max(0.0, min(1.0, bias_prob))
     overall_bias = "biased" if bias_prob >= 0.5 else "neutral"
-
-    # Updated confidence score logic
     confidence_score = bias_prob if overall_bias == "biased" else 1 - bias_prob
 
     return {
@@ -141,7 +130,7 @@ def analyze_article_logic(text_content: str) -> Dict:
         "confidence_score": round(confidence_score, 4),
         "confidence_pct": round(confidence_score * 100, 2),
         "highlights": highlights,
-        "themes": themes,
+        "themes": [],
         "original_text": text_content
     }
 
@@ -205,9 +194,8 @@ Text:
             parts = response.candidates[0].content.parts
             if parts and hasattr(parts[0], "text"):
                 neutral = parts[0].text.strip()
-
         if not neutral:
-            neutral = text  # fallback
+            neutral = text
 
         return {"neutral_text": neutral}
 
@@ -218,19 +206,13 @@ Text:
         raise HTTPException(status_code=500, detail=f"Rephrase failed: {str(e)}")
 
 # ------------------------------
-# Scrape and send to article analyze
+# Scrape and analyze
 # ------------------------------
 @app.post("/scrape-and-analyze")
 async def scrape_and_analyze(url: str = Form(...)) -> Dict:
-    """
-    Accepts a URL, scrapes text, and sends it to existing article analysis logic.
-    Uses fast batch sentence processing and updated confidence score.
-    """
     if not url.startswith("http"):
         raise HTTPException(status_code=422, detail="Invalid URL.")
-
     text_content = extract_text_from_url(url)
     if not text_content:
         raise HTTPException(status_code=500, detail="Failed to extract text from URL.")
-
     return analyze_article_logic(text_content)

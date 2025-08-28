@@ -45,6 +45,19 @@ export default function ResultsSection({
     }
   }
 
+  const getBiasColor = (bias: string) => {
+    switch (bias) {
+      case "high":
+        return "bg-red-300"
+      case "medium":
+        return "bg-yellow-200"
+      case "low":
+        return "bg-green-200"
+      default:
+        return ""
+    }
+  }
+
   return (
     <section id="results" className="py-10 px-6 flex justify-center">
       <Card className="w-full max-w-2xl shadow-lg rounded-2xl">
@@ -69,39 +82,40 @@ export default function ResultsSection({
                 style={{ width: `${result.confidence}%` }}
               />
             </div>
-            <p className="text-sm text-gray-600 mt-1">
-              {result.confidence}%
-            </p>
+            <p className="text-sm text-gray-600 mt-1">{result.confidence}%</p>
           </div>
 
-          {/* Highlights (only for article) */}
+          {/* Highlights */}
           {result.type === "article" && result.highlights && (
             <div>
               <h3 className="font-semibold mb-2">Highlights</h3>
               <ul className="space-y-1 text-sm">
-                {result.highlights.map((h, i) => (
-                  <li key={i}>
-                    <span
-                      className={
-                        h.bias === "high"
-                          ? "bg-red-300 px-1 rounded"
-                          : h.bias === "medium"
-                          ? "bg-yellow-200 px-1 rounded"
-                          : h.bias === "low"
-                          ? "bg-green-200 px-1 rounded"
-                          : ""
-                      }
-                    >
-                      {h.text}
-                    </span>{" "}
-                    – {Math.round(h.score * 100)}%
-                  </li>
-                ))}
+                {result.highlights.map((h, i) => {
+                  const tooltip = h.explanation
+                    ? h.explanation
+                        .split(";")
+                        .map((s) => s.trim())
+                        .slice(0, 5)
+                        .join(", ")
+                    : "No explanation available"
+
+                  return (
+                    <li key={i}>
+                      <span
+                        className={`${getBiasColor(h.bias)} px-1 rounded cursor-pointer`}
+                        title={`Top bias-contributing words: ${tooltip}`}
+                      >
+                        {h.text}
+                      </span>{" "}
+                      – {Math.round(h.score * 100)}%
+                    </li>
+                  )
+                })}
               </ul>
             </div>
           )}
 
-          {/* Rephrase Button (only for article) */}
+          {/* Rephrase Button */}
           {result.type === "article" && (
             <div className="flex justify-center">
               <Button onClick={handleRephraseClick} className="mt-4">
@@ -112,7 +126,7 @@ export default function ResultsSection({
         </CardContent>
       </Card>
 
-      {/* ✅ Rephrase Dialog */}
+      {/* Rephrase Modal */}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-4xl">
           <DialogHeader>
@@ -129,9 +143,17 @@ export default function ResultsSection({
               <div className="p-3 border rounded-lg text-sm space-y-2">
                 {result.highlights && result.original_text ? (
                   result.original_text.split(/(\. |\n)/).map((chunk, i) => {
-                    const match = result.highlights?.find(
-                      (h) => chunk.includes(h.text)
+                    const match = result.highlights?.find((h) =>
+                      chunk.includes(h.text)
                     )
+                    const tooltip = match?.explanation
+                      ? match.explanation
+                          .split(";")
+                          .map((s) => s.trim())
+                          .slice(0, 5)
+                          .join(", ")
+                      : ""
+
                     return (
                       <span
                         key={i}
@@ -144,6 +166,7 @@ export default function ResultsSection({
                               : "bg-green-200 px-1 rounded"
                             : ""
                         }
+                        title={tooltip ? `Top bias words: ${tooltip}` : ""}
                       >
                         {chunk}
                       </span>
