@@ -24,6 +24,7 @@ from app.models import (
     sentence_model
 )
 from app.xai import get_top_bias_words
+from app.services.firestore import add_document  # Firestore integration
 
 app = FastAPI(title="BiasLab API")
 
@@ -81,9 +82,6 @@ async def analyze_sentence(text: str = Form(...)) -> List[Dict]:
 # Article analysis logic
 # ------------------------------
 def analyze_article_logic(text_content: str) -> Dict:
-    """
-    Analyze an article, compute sentence-level bias, and attach SHAP-like explanations.
-    """
     sentences = sent_tokenize(text_content)
     highlights: List[Dict] = []
 
@@ -92,7 +90,7 @@ def analyze_article_logic(text_content: str) -> Dict:
             highlights = get_top_bias_words(sentence_model, sentence_tokenizer, sentences)
         except Exception as e:
             print("SHAP analysis error:", e)
-            # fallback scoring if SHAP fails
+            # fallback scoring
             inputs = sentence_tokenizer(
                 sentences,
                 return_tensors="pt",
@@ -119,7 +117,6 @@ def analyze_article_logic(text_content: str) -> Dict:
                     "explanation": "; ".join(sent.split()[:5])
                 })
 
-    # Compute overall confidence
     bias_prob = float(np.mean([h["score"] for h in highlights])) if highlights else 0.0
     bias_prob = max(0.0, min(1.0, bias_prob))
     overall_bias = "biased" if bias_prob >= 0.5 else "neutral"
@@ -140,7 +137,15 @@ def analyze_article_logic(text_content: str) -> Dict:
 @app.post("/analyze/article")
 async def analyze_article(text: str = Form(...)) -> Dict:
     text_content = extract_text_from_url(text) if text.startswith("http") else text
-    return analyze_article_logic(text_content)
+    result = analyze_article_logic(text_content)
+    
+    # Save to Firestore
+    try:
+        add_document("articles", result)
+    except Exception as e:
+        print("Firestore save error:", e)
+    
+    return result
 
 # ------------------------------
 # Image analysis
@@ -197,6 +202,12 @@ Text:
         if not neutral:
             neutral = text
 
+        # Save to Firestore
+        try:
+            add_document("rephrased_articles", {"original_text": text, "neutral_text": neutral})
+        except Exception as e:
+            print("Firestore save error (rephrase):", e)
+
         return {"neutral_text": neutral}
 
     except HTTPException:
@@ -215,4 +226,26 @@ async def scrape_and_analyze(url: str = Form(...)) -> Dict:
     text_content = extract_text_from_url(url)
     if not text_content:
         raise HTTPException(status_code=500, detail="Failed to extract text from URL.")
-    return analyze_article_logic(text_content)
+
+    result = analyze_article_logic(text_content)
+
+    # Save scraped article
+    try:
+        add_document("articles", result)
+    except Exception as e:
+        print("Firestore save error (scrape):", e)
+
+    return result
+
+# ------------------------------
+# Test Firestore integration
+# ------------------------------
+@app.post("/test-firestore")
+async def test_firestore():
+    """Test endpoint to check if Firestore writes work"""
+    try:
+        test_data = {"message": "Hello Firestore!", "status": "test"}
+        add_document("test_collection", test_data)
+        return {"success": True, "detail": "Test document added to Firestore."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
