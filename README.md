@@ -49,7 +49,6 @@ Aletheia is an AI-powered platform designed to **detect, explain, and mitigate i
 
 ### 5. Video Bias Analysis  
 - Supports video uploads for **asynchronous bias evaluation**.  
-- Uses Celery + Redis for background processing.  
 - Returns job IDs for tracking analysis progress.  
 - **Use case**: Researchers studying political ads, campaign videos, or news broadcasts.  
 
