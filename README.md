@@ -100,12 +100,14 @@ FIREBASE_CREDENTIALS_JSON=app/secrets/firebase.json
 ```
 ### **5. Run the Backend API**
 ```bash
+cd/backend
 uvicorn app.main:app --reload
 ```
 ### **6. Run Frontend**
 
 On a separate terminal, run:
 ```bash
+cd/frontend
 npm install
 npm run dev
 ```
