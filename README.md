@@ -1,5 +1,4 @@
-# Aletheia 🔍  
-**Bias Detection and Neutral Reframing Platform**
+# Aletheia 🔍
 
 Aletheia is an AI-powered platform designed to **detect, explain, and mitigate irresponsible consumption of information** in textual, visual, and video content. It supports researchers, journalists, educators, and the general public in identifying implicit or explicit manipulation in data and responds factually.
 
