@@ -57,3 +57,5 @@ venv/
 *.njsproj
 *.sln
 *.sw?
+# Ignore Firebase service account
+Backend/app/secrets/firebase.json
